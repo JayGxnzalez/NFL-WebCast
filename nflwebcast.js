@@ -198,7 +198,7 @@ async function searchResults(keyword) {
     var results = [];
     var kw = keyword.toLowerCase().trim();
 
-    if (kw === "" || kw === "all" || kw === "nfl") {
+    if (kw === "" || kw === "all") {
         var events = await fetchESPN();
         for (var i = 0; i < events.length; i++) {
             var comp = events[i].competitions[0];
@@ -227,6 +227,18 @@ async function searchResults(keyword) {
 
     for (var i = 0; i < TEAMS.length; i++) {
         if (TEAMS[i].name.toLowerCase().indexOf(kw) !== -1) {
+            results.push({
+                title: TEAMS[i].name,
+                image: teamLogo(TEAMS[i].abbr),
+                href: teamPageUrl(TEAMS[i].slug)
+            });
+        }
+    }
+
+    // No name match (typo, or a term like "nfl"/"football") — show the full team list
+    // rather than an empty screen.
+    if (results.length === 0) {
+        for (var i = 0; i < TEAMS.length; i++) {
             results.push({
                 title: TEAMS[i].name,
                 image: teamLogo(TEAMS[i].abbr),
@@ -287,7 +299,8 @@ async function extractEpisodes(url) {
         var res = await soraFetch(url, { headers: { "User-Agent": UA } });
         var html = await getText(res);
 
-        // Grab every /live/*.html feed link with its anchor label (HOME, AWAY, LINK 3, LINK 4, HDTV...)
+        // Keep only the HOME and AWAY feeds — LINK 3 / LINK 4 are iframe embeds, and
+        // the top-of-page hdtv.html is a generic channel feed, not the game.
         var re = /<a[^>]+href="(https?:\/\/nflwebcast\.com\/live\/[^"]+?\.html)[^"]*"[^>]*>([\s\S]*?)<\/a>/gi;
         var m;
         var seen = {};
@@ -295,9 +308,9 @@ async function extractEpisodes(url) {
         while ((m = re.exec(html)) !== null) {
             var link = m[1].split("?")[0];
             if (seen[link]) continue;
+            var label = m[2].replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim().toUpperCase();
+            if (label !== "HOME" && label !== "AWAY") continue;
             seen[link] = true;
-            var label = m[2].replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim();
-            if (!label) label = "Stream " + (pairs.length + 1);
             pairs.push(label + "~~" + link);
         }
 
@@ -307,6 +320,20 @@ async function extractEpisodes(url) {
     } catch (e) {
         return JSON.stringify([]);
     }
+}
+
+// Derive the team name from a /live/ filename: bills.html -> "Bills", 49ers.html -> "49ers"
+function teamNameFromUrl(htmlUrl) {
+    var m = htmlUrl.match(/\/([^\/]+)\.html$/);
+    if (!m) return "";
+    var name = m[1].replace(/[0-9]+$/, "").replace(/-/g, " ").trim();
+    if (!name) return "";
+    return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+// Picker label is just the team name; fall back to HOME/AWAY if the filename is unusable
+function buildLabel(anchorLabel, htmlUrl) {
+    return teamNameFromUrl(htmlUrl) || anchorLabel || "Stream";
 }
 
 // Resolve a single /live/*.html feed page to an m3u8.
@@ -335,10 +362,10 @@ async function extractStreamUrl(url) {
         var tasks = [];
         for (var i = 0; i < items.length; i++) {
             var parts = items[i].split("~~");
-            var label = parts.length > 1 ? parts[0] : ("Stream " + (i + 1));
+            var label = parts.length > 1 ? parts[0] : "";
             var link = parts.length > 1 ? parts[1] : parts[0];
             if (!link) continue;
-            tasks.push({ label: label, link: link });
+            tasks.push({ label: buildLabel(label, link), link: link });
         }
 
         var resolved = await Promise.all(tasks.map(async function (t) {
