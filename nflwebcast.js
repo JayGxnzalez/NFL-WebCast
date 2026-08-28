@@ -202,27 +202,51 @@ async function fetchTodaySlate() {
     try {
         var res = await soraFetch(TODAY_URL, { headers: { "User-Agent": UA } });
         var html = await getText(res);
-        if (!html) return [];
 
-        // Matchup anchors point at the home team's page and read like "Steelers @ Bills August 27, 2026"
-        var re = /<a[^>]+href="https?:\/\/nflwebcast\.com\/([a-z0-9-]+-live-stream-online-free)\/?[^"]*"[^>]*>([^<]*?@[^<]*?)<\/a>/gi;
+        // Some hosts reject the custom UA — retry bare before giving up.
+        if (!html || html.length < 500) {
+            var res2 = await soraFetch(TODAY_URL);
+            var html2 = await getText(res2);
+            if (html2 && html2.length > (html ? html.length : 0)) html = html2;
+        }
+        if (!html) {
+            console.log("[NFLWebCast] nfl-today fetch returned empty");
+            return [];
+        }
+
+        // Match any anchor pointing at a team page, then strip nested tags from its
+        // inner HTML. WP wraps team names / dates in spans, so the text is rarely flat.
+        var re = /<a\b[^>]*href="(?:[^"]*?nflwebcast\.com)?\/([a-z0-9-]+-live-stream-online-free)\/?[^"]*"[^>]*>([\s\S]*?)<\/a>/gi;
         var m;
         var seen = {};
         var games = [];
         while ((m = re.exec(html)) !== null) {
             var slug = m[1];
-            var text = m[2].replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
+            var text = m[2]
+                .replace(/<[^>]*>/g, " ")
+                .replace(/&nbsp;/gi, " ")
+                .replace(/&#0?64;/g, "@")
+                .replace(/&amp;/gi, "&")
+                .replace(/\s+/g, " ")
+                .trim();
+
+            // Matchup cells contain "@"; logo cells and "Watch" buttons don't.
             if (text.indexOf("@") === -1) continue;
 
             // Trim the trailing date ("Steelers @ Bills August 27, 2026" -> "Steelers @ Bills")
-            var title = text.replace(/\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s*\d{4}\s*$/i, "").trim();
-            if (!title) continue;
+            var title = text
+                .replace(/\s*(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(st|nd|rd|th)?,?\s*\d{2,4}\s*$/i, "")
+                .replace(/\s*\d{1,2}\/\d{1,2}\/\d{2,4}\s*$/, "")
+                .trim();
+            if (!title || title === "@") continue;
 
-            var key = slug + "|" + title;
+            var key = slug + "|" + title.toLowerCase();
             if (seen[key]) continue;
             seen[key] = true;
             games.push({ slug: slug, title: title });
         }
+
+        console.log("[NFLWebCast] nfl-today parsed " + games.length + " games");
         return games;
     } catch (e) { return []; }
 }
