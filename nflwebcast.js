@@ -194,25 +194,85 @@ async function fetchESPN() {
     return [];
 }
 
+var TODAY_URL = "https://nflwebcast.com/nfl-today/";
+
+// Scrape the site's own schedule table. These are the only games the site actually
+// carries links for, so this — not ESPN — decides what appears in the list.
+async function fetchTodaySlate() {
+    try {
+        var res = await soraFetch(TODAY_URL, { headers: { "User-Agent": UA } });
+        var html = await getText(res);
+        if (!html) return [];
+
+        // Matchup anchors point at the home team's page and read like "Steelers @ Bills August 27, 2026"
+        var re = /<a[^>]+href="https?:\/\/nflwebcast\.com\/([a-z0-9-]+-live-stream-online-free)\/?[^"]*"[^>]*>([^<]*?@[^<]*?)<\/a>/gi;
+        var m;
+        var seen = {};
+        var games = [];
+        while ((m = re.exec(html)) !== null) {
+            var slug = m[1];
+            var text = m[2].replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
+            if (text.indexOf("@") === -1) continue;
+
+            // Trim the trailing date ("Steelers @ Bills August 27, 2026" -> "Steelers @ Bills")
+            var title = text.replace(/\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s*\d{4}\s*$/i, "").trim();
+            if (!title) continue;
+
+            var key = slug + "|" + title;
+            if (seen[key]) continue;
+            seen[key] = true;
+            games.push({ slug: slug, title: title });
+        }
+        return games;
+    } catch (e) { return []; }
+}
+
 async function searchResults(keyword) {
     var results = [];
     var kw = keyword.toLowerCase().trim();
 
     if (kw === "" || kw === "all") {
+        var games = await fetchTodaySlate();
         var events = await fetchESPN();
-        for (var i = 0; i < events.length; i++) {
-            var comp = events[i].competitions[0];
-            var info = buildGameInfo(comp);
-            if (!info) continue;
-            var homeSlug = info.homeSlug || "";
-            var watchUrl = homeSlug ? teamPageUrl(homeSlug) : "";
-            if (!watchUrl) continue;
-            results.push({
-                title: info.title + " - " + info.statusStr,
-                image: info.image,
-                href: watchUrl
+
+        // Index ESPN games by home slug so we can attach LIVE status / kickoff time
+        var bySlug = {};
+        for (var e = 0; e < events.length; e++) {
+            var g = buildGameInfo(events[e].competitions[0]);
+            if (!g) continue;
+            if (g.homeSlug) bySlug[g.homeSlug] = g;
+        }
+
+        var slate = [];
+        for (var i = 0; i < games.length; i++) {
+            var info = bySlug[games[i].slug] || null;
+
+            // Site still lists it, but ESPN says it's over — no usable stream.
+            if (info && info.statusState === "post") continue;
+
+            var label = games[i].title;
+            if (info && info.statusStr) label = label + " - " + info.statusStr;
+
+            slate.push({
+                title: label,
+                image: info ? info.image : ICON,
+                href: teamPageUrl(games[i].slug),
+                _live: info && info.statusState === "in" ? 0 : 1,
+                _order: i
             });
         }
+
+        // Live games first, otherwise keep the site's own listing order (already by kickoff)
+        slate.sort(function (a, b) {
+            if (a._live !== b._live) return a._live - b._live;
+            return a._order - b._order;
+        });
+
+        for (var s = 0; s < slate.length; s++) {
+            results.push({ title: slate[s].title, image: slate[s].image, href: slate[s].href });
+        }
+
+        // Scrape failed or nothing scheduled — fall back to the team list
         if (results.length === 0) {
             for (var i = 0; i < TEAMS.length; i++) {
                 results.push({
