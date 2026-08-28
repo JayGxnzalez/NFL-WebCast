@@ -105,17 +105,17 @@ function teamPageUrl(slug) {
 function formatGameTime(dateStr) {
     try {
         var d = new Date(dateStr);
-        // Convert to ET (UTC-4 during EDT, UTC-5 during EST) — NFL is ET-centric
+        // Convert to PT (UTC-7 during PDT, UTC-8 during PST) — matches the MLB module
         var month = d.getUTCMonth(); // 0-indexed
         var isDST = month >= 2 && month <= 10; // Mar-Nov
-        var offset = isDST ? -4 : -5;
-        var etMs = d.getTime() + offset * 3600000;
-        var et = new Date(etMs);
-        var h = et.getUTCHours();
-        var m = et.getUTCMinutes();
+        var offset = isDST ? -7 : -8;
+        var ptMs = d.getTime() + offset * 3600000;
+        var pt = new Date(ptMs);
+        var h = pt.getUTCHours();
+        var m = pt.getUTCMinutes();
         var ampm = h >= 12 ? "PM" : "AM";
         h = h % 12 || 12;
-        return h + ":" + (m < 10 ? "0" + m : m) + " " + ampm + " ET";
+        return h + ":" + (m < 10 ? "0" + m : m) + " " + ampm + " PT";
     } catch (e) { return ""; }
 }
 
@@ -135,7 +135,7 @@ function buildGameInfo(comp) {
         } else if (status.state === "pre") {
             statusStr = formatGameTime(comp.date);
         } else {
-            statusStr = "Finished";
+            statusStr = "Final";
         }
 
         var awayRecord = "";
@@ -156,7 +156,7 @@ function buildGameInfo(comp) {
         var venueCity = comp.venue && comp.venue.address && comp.venue.address.city ? comp.venue.address.city : "";
 
         var parts = [];
-        parts.push(statusStr === "LIVE" ? "Status: LIVE" : statusStr === "Finished" ? "Status: Finished" : "Time: " + statusStr);
+        parts.push(statusStr === "LIVE" ? "Status: LIVE" : statusStr === "Final" ? "Status: Final" : "Time: " + statusStr);
         if (venueName) parts.push("\uD83C\uDFDF " + venueName + (venueCity ? ", " + venueCity : ""));
         parts.push(away.team.displayName + " (" + awayRecord + ") @ " + home.team.displayName + " (" + homeRecord + ")");
 
@@ -271,24 +271,26 @@ async function searchResults(keyword) {
         for (var i = 0; i < games.length; i++) {
             var info = bySlug[games[i].slug] || null;
 
-            // Site still lists it, but ESPN says it's over — no usable stream.
-            if (info && info.statusState === "post") continue;
-
             var label = games[i].title;
             if (info && info.statusStr) label = label + " - " + info.statusStr;
+
+            // Rank for ordering: live first, then upcoming, then finished last.
+            var rank = 1;
+            if (info && info.statusState === "in") rank = 0;
+            else if (info && info.statusState === "post") rank = 2;
 
             slate.push({
                 title: label,
                 image: info ? info.image : ICON,
                 href: teamPageUrl(games[i].slug),
-                _live: info && info.statusState === "in" ? 0 : 1,
+                _rank: rank,
                 _order: i
             });
         }
 
-        // Live games first, otherwise keep the site's own listing order (already by kickoff)
+        // Live first, then upcoming, then finals — each keeping the site's listing order
         slate.sort(function (a, b) {
-            if (a._live !== b._live) return a._live - b._live;
+            if (a._rank !== b._rank) return a._rank - b._rank;
             return a._order - b._order;
         });
 
