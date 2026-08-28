@@ -384,26 +384,60 @@ async function extractEpisodes(url) {
     try {
         var res = await soraFetch(url, { headers: { "User-Agent": UA } });
         var html = await getText(res);
-
-        // Keep only the HOME and AWAY feeds — LINK 3 / LINK 4 are iframe embeds, and
-        // the top-of-page hdtv.html is a generic channel feed, not the game.
-        var re = /<a[^>]+href="(https?:\/\/nflwebcast\.com\/live\/[^"]+?\.html)[^"]*"[^>]*>([\s\S]*?)<\/a>/gi;
-        var m;
-        var seen = {};
-        var pairs = [];
-        while ((m = re.exec(html)) !== null) {
-            var link = m[1].split("?")[0];
-            if (seen[link]) continue;
-            var label = m[2].replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim().toUpperCase();
-            if (label !== "HOME" && label !== "AWAY") continue;
-            seen[link] = true;
-            pairs.push(label + "~~" + link);
+        if (!html) {
+            console.log("[NFLWebCast] team page fetch returned empty");
+            return JSON.stringify([]);
         }
 
-        if (pairs.length === 0) return JSON.stringify([]);
+        // Collect every /live/*.html feed link first, then filter — accepts relative hrefs too.
+        var re = /<a\b[^>]*href="(?:[^"]*?nflwebcast\.com)?(\/live\/[^"]+?\.html)[^"]*"[^>]*>([\s\S]*?)<\/a>/gi;
+        var m;
+        var seen = {};
+        var all = [];
+        while ((m = re.exec(html)) !== null) {
+            var link = "https://nflwebcast.com" + m[1].split("?")[0];
+            if (seen[link]) continue;
+            seen[link] = true;
+            var label = m[2]
+                .replace(/<[^>]*>/g, " ")
+                .replace(/&nbsp;/gi, " ")
+                .replace(/&amp;/gi, "&")
+                .replace(/\s+/g, " ")
+                .trim();
+            all.push({ label: label, link: link });
+        }
+
+        console.log("[NFLWebCast] found " + all.length + " /live/ links");
+        if (all.length === 0) return JSON.stringify([]);
+
+        // Prefer HOME/AWAY (substring match, not exact — markup varies).
+        // LINK 3 / LINK 4 are iframe embeds; hdtv.html is a generic channel feed.
+        var picked = [];
+        for (var i = 0; i < all.length; i++) {
+            var up = all[i].label.toUpperCase();
+            if (up.indexOf("HOME") !== -1 || up.indexOf("AWAY") !== -1) picked.push(all[i]);
+        }
+
+        // Nothing matched the labels — fall back to every feed except the generic
+        // channel page, so a markup change can't leave the picker empty.
+        if (picked.length === 0) {
+            console.log("[NFLWebCast] no HOME/AWAY labels matched, using all feeds");
+            for (var j = 0; j < all.length; j++) {
+                if (all[j].link.indexOf("/hdtv.html") !== -1) continue;
+                picked.push(all[j]);
+            }
+        }
+
+        if (picked.length === 0) return JSON.stringify([]);
+
+        var pairs = [];
+        for (var k = 0; k < picked.length; k++) {
+            pairs.push(picked[k].label + "~~" + picked[k].link);
+        }
 
         return JSON.stringify([{ number: 1, title: "Live Stream", href: pairs.join("|") }]);
     } catch (e) {
+        console.log("[NFLWebCast] extractEpisodes error: " + e);
         return JSON.stringify([]);
     }
 }
